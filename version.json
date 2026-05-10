@@ -1,0 +1,6 @@
+{
+    "version": "1.0.2",
+    "name": "distortionz_perms",
+    "download": "https://github.com/Distortionzz/Distortionz_Perms",
+    "changelog": "v1.0.2 — Added README.md with overview, features, dependencies, installation, command reference, API, and credits. Standardized GitHub repo metadata (badges, dynamic version pull, MIT license, Qbox required). v1.0.1 — Race fix for client cache. Added client export RefreshTier() so other distortionz_* scripts can force a known-fresh tier fetch on demand. Cache also auto-refreshes on playerSpawned so it's warm earlier. v1.0.0 — Initial release."
+}
