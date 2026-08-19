@@ -15,27 +15,35 @@
 
 DB = DB or {}
 
-local SCHEMA = [[
-CREATE TABLE IF NOT EXISTS distortionz_perms_ranks (
-    license    VARCHAR(60) PRIMARY KEY,
-    tier       VARCHAR(32) NOT NULL,
-    granted_by VARCHAR(60) NULL,
-    granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_tier (tier)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS distortionz_perms_identities (
-    citizenid  VARCHAR(50) PRIMARY KEY,
-    license    VARCHAR(60) NOT NULL,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_license (license)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-]]
+-- Two separate statements, run as two separate queries — oxmysql doesn't
+-- run in multi-statement mode (reasonably: that mode is a classic SQLi
+-- amplifier), so a single query call can only ever contain one statement.
+local SCHEMA = {
+    [[
+    CREATE TABLE IF NOT EXISTS distortionz_perms_ranks (
+        license    VARCHAR(60) PRIMARY KEY,
+        tier       VARCHAR(32) NOT NULL,
+        granted_by VARCHAR(60) NULL,
+        granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_tier (tier)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ]],
+    [[
+    CREATE TABLE IF NOT EXISTS distortionz_perms_identities (
+        citizenid  VARCHAR(50) PRIMARY KEY,
+        license    VARCHAR(60) NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_license (license)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    ]],
+}
 
 CreateThread(function()
     local ok, err = pcall(function()
-        MySQL.query.await(SCHEMA, {})
+        for _, statement in ipairs(SCHEMA) do
+            MySQL.query.await(statement, {})
+        end
     end)
     if not ok then
         print(('^1[distortionz_perms] ^7DB schema bootstrap FAILED: %s'):format(tostring(err)))
