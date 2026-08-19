@@ -32,11 +32,16 @@ Config.Tiers = {
 
 -- ─── Bootstrap owners ───────────────────────────────────────────────
 -- Chicken-and-egg: someone needs to be Owner before anyone can /setrank.
--- Put your own citizenid(s) here OR set the convar `distortionz_perms_owners`
+-- Keyed by LICENSE, not citizenid — this runs at server boot, before
+-- anyone has necessarily connected, so there's no citizenid->license
+-- mapping to resolve through yet. License you can get offline (it's on
+-- your Cfx.re/Steam account, or printed to console the first time you
+-- connect — look for "license:" in the join log).
+-- Put your own license(s) here OR set the convar `distortionz_perms_owners`
 -- in server.cfg (comma-separated). Both are merged on boot.
---   set distortionz_perms_owners "ABC12345,XYZ67890"
+--   set distortionz_perms_owners "license:abc123...,license:def456..."
 Config.BootstrapOwners = {
-    -- 'YOUR_CITIZEN_ID_HERE',
+    -- 'license:YOUR_LICENSE_HERE',
 }
 
 -- ─── Behavior ───────────────────────────────────────────────────────

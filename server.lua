@@ -4,11 +4,19 @@
 -- ║ Authoritative rank store. Other distortionz_* scripts call into  ║
 -- ║ this resource via exports for any permission decision. Never     ║
 -- ║ trust the client cache for gating — it's UI-only.                ║
+-- ║                                                                  ║
+-- ║ Ranks are keyed by LICENSE, not citizenid — see database.lua for ║
+-- ║ why. Every export keeps its original name/shape so nothing else  ║
+-- ║ in the stack has to change; the license resolution happens       ║
+-- ║ entirely inside this file.                                       ║
 -- ╚══════════════════════════════════════════════════════════════════╝
 
 -- ─── State ──────────────────────────────────────────────────────────
 -- src -> tier string. Hydrated on player load, dropped on disconnect.
 local sessionTiers = {}
+-- src -> license, cached alongside sessionTiers so setTierByCid can find
+-- and update a live session without re-resolving identifiers every time.
+local sessionLicenses = {}
 
 -- ─── Helpers ────────────────────────────────────────────────────────
 local function Debug(...)
@@ -27,6 +35,15 @@ local function getCitizenId(src)
     local p = getPlayer(src)
     if not p or not p.PlayerData then return nil end
     return p.PlayerData.citizenid
+end
+
+--- FiveM's own identifier, not a framework field — works standalone or
+--- Qbox, and is what actually survives a character being deleted.
+local function getLicense(src)
+    if not src or src == 0 then return nil end
+    local ok, license = pcall(GetPlayerIdentifierByType, src, 'license')
+    if ok and license and license ~= '' then return license end
+    return nil
 end
 
 local function tierWeight(tier)
@@ -48,23 +65,27 @@ local function notify(src, message, notifyType, duration, title)
 end
 
 -- ─── Bootstrap owners (config + convar merge) ──────────────────────
+-- Keyed by LICENSE, not citizenid — this runs at boot, before anyone has
+-- necessarily connected yet, so there's no identity mapping to resolve a
+-- citizenid through. License is knowable offline (your Cfx.re/Steam
+-- account), so it has no chicken-and-egg problem.
 local function bootstrapOwners()
     local merged = {}
-    for _, cid in ipairs(Config.BootstrapOwners or {}) do
-        if cid and cid ~= '' then merged[cid] = true end
+    for _, license in ipairs(Config.BootstrapOwners or {}) do
+        if license and license ~= '' then merged[license] = true end
     end
     local convar = GetConvar('distortionz_perms_owners', '')
     if convar ~= '' then
-        for cid in convar:gmatch('[^,%s]+') do merged[cid] = true end
+        for license in convar:gmatch('[^,%s]+') do merged[license] = true end
     end
 
     local count = 0
-    for cid in pairs(merged) do
-        local current = DB.GetTier(cid)
+    for license in pairs(merged) do
+        local current = DB.GetTier(license)
         if current ~= 'owner' then
-            DB.SetTier(cid, 'owner', 'bootstrap')
+            DB.SetTier(license, 'owner', 'bootstrap')
             count = count + 1
-            print(('^2[distortionz_perms]^7 bootstrapped owner: %s'):format(cid))
+            print(('^2[distortionz_perms]^7 bootstrapped owner: %s'):format(license))
         end
     end
     if count > 0 then
@@ -79,11 +100,18 @@ end)
 
 -- ─── Hydrate player on load ─────────────────────────────────────────
 local function hydrate(src)
+    local license = getLicense(src)
+    if not license then sessionTiers[src] = 'none'; sessionLicenses[src] = nil; return 'none' end
+
+    -- Keep the citizenid -> license directory current so offline,
+    -- citizenid-based lookups (admin's staff panel) keep working.
     local cid = getCitizenId(src)
-    if not cid then sessionTiers[src] = 'none'; return 'none' end
-    local tier = DB.GetTier(cid)
-    sessionTiers[src] = tier
-    Debug(('hydrate src=%d cid=%s tier=%s'):format(src, cid, tier))
+    if cid then DB.RecordIdentity(cid, license) end
+
+    local tier = DB.GetTier(license)
+    sessionTiers[src]    = tier
+    sessionLicenses[src] = license
+    Debug(('hydrate src=%d license=%s tier=%s'):format(src, license, tier))
     return tier
 end
 
@@ -97,12 +125,14 @@ AddEventHandler('qbx_core:server:onPlayerLoaded', function(src)
 end)
 
 AddEventHandler('playerDropped', function()
-    sessionTiers[source] = nil
+    sessionTiers[source]    = nil
+    sessionLicenses[source] = nil
 end)
 
 -- ─── Public exports ─────────────────────────────────────────────────
 -- All exports take a server src (number) and resolve internally.
--- For citizenid-based lookups (offline players), use Get/SetTierByCid.
+-- For citizenid-based lookups (offline players), use Get/SetTierByCid —
+-- they resolve citizenid -> license through the identity directory.
 
 local function getTier(src)
     if not src then return 'none' end
@@ -122,38 +152,55 @@ local function hasTier(src, tier)
 end
 exports('HasTier', hasTier)
 
-exports('GetTierByCid', function(cid) return DB.GetTier(cid) end)
+exports('GetTierByCid', function(cid)
+    local license = DB.ResolveLicense(cid)
+    if not license then return 'none' end
+    return DB.GetTier(license)
+end)
 
 -- Returns true on success. Validates tier exists. Granter is logged for audit.
 local function setTier(targetSrc, newTier, grantedBy)
     if not Config.Tiers[newTier] then return false, 'unknown tier' end
-    local cid = getCitizenId(targetSrc)
-    if not cid then return false, 'no citizenid' end
-    DB.SetTier(cid, newTier, grantedBy)
+    local license = getLicense(targetSrc)
+    if not license then return false, 'no license' end
+    DB.SetTier(license, newTier, grantedBy)
     sessionTiers[targetSrc] = newTier
     if Config.Behavior.logRankChanges then
-        print(('^3[distortionz_perms]^7 %s set to %s (by %s)'):format(cid, newTier, tostring(grantedBy)))
+        print(('^3[distortionz_perms]^7 %s set to %s (by %s)'):format(license, newTier, tostring(grantedBy)))
     end
+    local cid = getCitizenId(targetSrc)
     TriggerClientEvent('distortionz_perms:client:tierChanged', targetSrc, newTier)
     TriggerEvent('distortionz_perms:server:tierChanged', targetSrc, cid, newTier, grantedBy)
     return true
 end
 exports('SetTier', setTier)
 
+--- cid here is whatever the caller has on hand (e.g. admin's staff panel,
+--- which is citizenid-keyed like the rest of that UI). Resolved to a
+--- license via the identity directory before touching the rank table.
+--- Fails cleanly if this citizenid has never connected while perms was
+--- running — there's nothing to resolve it to yet.
 local function setTierByCid(cid, newTier, grantedBy)
     if not Config.Tiers[newTier] then return false, 'unknown tier' end
     if not cid or cid == '' then return false, 'no citizenid' end
-    DB.SetTier(cid, newTier, grantedBy)
-    -- If this citizenid has an active session, update the cache + notify
-    for src, _ in pairs(sessionTiers) do
-        if getCitizenId(src) == cid then
+
+    local license = DB.ResolveLicense(cid)
+    if not license then return false, 'this player has never connected — no known license yet' end
+
+    DB.SetTier(license, newTier, grantedBy)
+
+    -- Match by license, not citizenid — catches the case where the admin
+    -- granted against one of this account's characters but the player is
+    -- currently online on a different one.
+    for src, sessionLicense in pairs(sessionLicenses) do
+        if sessionLicense == license then
             sessionTiers[src] = newTier
             TriggerClientEvent('distortionz_perms:client:tierChanged', src, newTier)
             break
         end
     end
     if Config.Behavior.logRankChanges then
-        print(('^3[distortionz_perms]^7 %s set to %s (by %s, offline-set)'):format(cid, newTier, tostring(grantedBy)))
+        print(('^3[distortionz_perms]^7 %s set to %s (by %s, offline-set via cid %s)'):format(license, newTier, tostring(grantedBy), cid))
     end
     TriggerEvent('distortionz_perms:server:tierChanged', nil, cid, newTier, grantedBy)
     return true
@@ -177,7 +224,8 @@ end)
 -- /setrank <id> <tier>  — owner-only by default; admins can promote up to mod
 RegisterCommand('setrank', function(src, args)
     if src == 0 then
-        -- Console: full power
+        -- Console: takes a citizenid for convenience (what you'd have on
+        -- hand from a player list); resolved to license internally.
         local targetCid, tier = args[1], args[2]
         if not targetCid or not tier then
             print('Usage (console): setrank <citizenid> <none|mod|admin|owner>')
@@ -216,8 +264,8 @@ RegisterCommand('setrank', function(src, args)
         return
     end
 
-    local granterCid = getCitizenId(src) or ('src:' .. tostring(src))
-    local ok, err = setTier(targetId, newTier, granterCid)
+    local granterLicense = getLicense(src) or ('src:' .. tostring(src))
+    local ok, err = setTier(targetId, newTier, granterLicense)
     if ok then
         notify(src, ('Set player %d to %s.'):format(targetId, newTier), 'success')
     else
@@ -230,6 +278,18 @@ RegisterCommand('myrank', function(src)
     local tier = getTier(src)
     local entry = Config.Tiers[tier] or Config.Tiers.none
     notify(src, ('You are: %s'):format(entry.label), 'inform', 5000, 'Your Rank')
+end, false)
+
+-- Self-service lookup so a player can quote their own citizenid — support
+-- tickets, bug reports, an admin asking "what's your CID" in chat, etc.
+RegisterCommand('mycid', function(src)
+    if src == 0 then print('Console has no citizenid.'); return end
+    local cid = getCitizenId(src)
+    if not cid then
+        notify(src, 'No character loaded yet.', 'error', 4000, 'Citizen ID')
+        return
+    end
+    notify(src, cid, 'inform', 8000, 'Your Citizen ID')
 end, false)
 
 -- ─── Startup banner ────────────────────────────────────────────────
