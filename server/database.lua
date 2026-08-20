@@ -110,10 +110,25 @@ function DB.ListByTier(tier)
     return rows or {}
 end
 
+--- Consumers (distortionz_admin's staff panel) are citizenid-oriented, so
+--- this best-effort resolves each rank's citizenid via the identity
+--- directory — nil if that license has never connected while perms was
+--- running (e.g. a bootstrap owner who hasn't joined yet). A license can
+--- own multiple citizenids (alt characters on one account); we surface
+--- whichever was seen most recently rather than fanning out one row per
+--- character, since a "rank" is an account-level thing.
 function DB.ListAll()
-    local rows = MySQL.query.await(
-        'SELECT license, tier, granted_by, granted_at, updated_at FROM distortionz_perms_ranks ORDER BY tier DESC, granted_at',
-        {}
-    )
+    local rows = MySQL.query.await([[
+        SELECT
+            r.license, r.tier, r.granted_by, r.granted_at, r.updated_at,
+            (
+                SELECT i.citizenid FROM distortionz_perms_identities i
+                WHERE i.license = r.license
+                ORDER BY i.updated_at DESC
+                LIMIT 1
+            ) AS citizenid
+        FROM distortionz_perms_ranks r
+        ORDER BY r.tier DESC, r.granted_at
+    ]], {})
     return rows or {}
 end
